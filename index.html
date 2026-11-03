@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SkinScan AI - Skin Disease Classification</title>
+<style>
+:root{--bg:#f3f6fb;--card:#fff;--text:#1b2433;--muted:#5d6b82;--pri:#1F3864;--acc:#2E5597;--line:#d9e1ee;--warn:#fff4d6;--warnt:#6b4e00}
+@media(prefers-color-scheme:dark){:root{--bg:#10151f;--card:#1a2130;--text:#e7ecf5;--muted:#9aa8c0;--pri:#8fb2ee;--acc:#6f97dc;--line:#2c3649;--warn:#3a3014;--warnt:#f3d98a}}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5}
+header{background:#1F3864;color:#fff;padding:22px 16px;text-align:center}
+header h1{margin:0;font-size:1.5rem}
+header p{margin:6px 0 0;opacity:.85;font-size:.9rem}
+main{max-width:980px;margin:0 auto;padding:16px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:720px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+.card h2{margin:0 0 10px;font-size:1.05rem;color:var(--pri)}
+#drop{border:2px dashed var(--acc);border-radius:10px;padding:28px 12px;text-align:center;cursor:pointer;color:var(--muted)}
+#drop.over{background:rgba(46,85,151,.1)}
+.stage{position:relative;display:none;margin-top:12px}
+.stage img,.stage canvas{width:100%;border-radius:8px;display:block}
+.stage canvas{position:absolute;inset:0;pointer-events:none;opacity:.55}
+button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:.95rem;cursor:pointer;margin:12px 8px 0 0}
+button.sec{background:transparent;color:var(--acc);border:1px solid var(--acc)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.label{font-size:1.3rem;font-weight:700;color:var(--pri)}
+.bar{margin:8px 0}.bar span{font-size:.85rem;display:flex;justify-content:space-between}
+.track{height:9px;background:var(--line);border-radius:6px;overflow:hidden}
+.fill{height:100%;background:var(--acc);width:0;transition:width .6s}
+.note{background:var(--warn);color:var(--warnt);border-radius:8px;padding:10px 12px;font-size:.85rem;margin-top:12px}
+.hidden{display:none}
+ul{padding-left:18px;margin:6px 0}
+footer{text-align:center;color:var(--muted);font-size:.8rem;padding:20px 12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>SkinScan AI</h1>
+  <p>Deep Learning-Based Prediction and Classification of Skin Diseases | AD3501 Team 1</p>
+</header>
+
+<main>
+  <div class="grid">
+    <section class="card">
+      <h2>1. Upload skin image</h2>
+      <div id="drop">Tap to choose or drag and drop a dermoscopic / clinical image<br><small>JPG or PNG</small></div>
+      <input type="file" id="file" accept="image/*" hidden>
+      <div class="stage" id="stage"><img id="preview" alt="Uploaded skin image"><canvas id="heat"></canvas></div>
+      <button id="go" disabled>Analyze image</button>
+      <button id="reset" class="sec">Reset</button>
+      <label style="display:block;margin-top:10px;font-size:.85rem"><input type="checkbox" id="showHeat" checked> Show Grad-CAM heatmap</label>
+    </section>
+
+    <section class="card">
+      <h2>2. Prediction</h2>
+      <div id="empty" style="color:var(--muted)">Upload an image and press Analyze.</div>
+      <div id="out" class="hidden">
+        <div class="label" id="lbl"></div>
+        <div style="color:var(--muted);margin-bottom:8px" id="conf"></div>
+        <div id="bars"></div>
+        <div class="note" id="mode"></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:16px">
+    <h2>About the model</h2>
+    <p>Hybrid transfer learning model: <b>DenseNet121 + EfficientNetB0</b> features are fused and classified with a softmax head. Grad-CAM shows which region of the image influenced the prediction.</p>
+    <p><b>Research gaps addressed:</b></p>
+    <ul>
+      <li>Dataset diversity across skin tones: skin-tone-aware augmentation and per-tone evaluation.</li>
+      <li>Explainability and clinical trust: Grad-CAM heatmap with every prediction.</li>
+      <li>Generalization and real-world validation: robustness tests for lighting, blur and noise, plus an external test set.</li>
+    </ul>
+  </section>
+
+  <div class="note">This tool is a decision-support project demo and not a medical diagnosis. Please consult a dermatologist for any skin concern.</div>
+</main>
+
+<footer>Team 1, AI &amp; DS | AD3501 Deep Learning | Guide: Mrs. R. Kalaiyarasi</footer>
+
+<script>
+/* ---- CONFIG ----
+   Leave API_URL empty to run in DEMO mode (random output, NOT a real prediction).
+   To use your trained model, run a backend (e.g. Flask) with POST /predict that accepts
+   form-data field "image" and returns JSON:
+   { "label": "Melanoma", "confidence": 0.91, "probs": {"Melanoma":0.91, ...}, "heatmap": "data:image/png;base64,..." (optional) }
+*/
+const API_URL = "";
+const CLASSES = ["Melanocytic nevi","Melanoma","Benign keratosis","Basal cell carcinoma","Actinic keratoses","Vascular lesions","Dermatofibroma"];
+
+const $ = id => document.getElementById(id);
+let current = null;
+
+const drop = $("drop"), fileInput = $("file");
+drop.onclick = () => fileInput.click();
+["dragover","dragenter"].forEach(e => drop.addEventListener(e, ev => {ev.preventDefault(); drop.classList.add("over");}));
+["dragleave","drop"].forEach(e => drop.addEventListener(e, ev => {ev.preventDefault(); drop.classList.remove("over");}));
+drop.addEventListener("drop", ev => load(ev.dataTransfer.files[0]));
+fileInput.onchange = () => load(fileInput.files[0]);
+
+function load(f){
+  if(!f || !f.type.startsWith("image/")) return alert("Please select an image file.");
+  current = f;
+  $("preview").src = URL.createObjectURL(f);
+  $("stage").style.display = "block";
+  $("go").disabled = false;
+  clearHeat(); $("out").classList.add("hidden"); $("empty").classList.remove("hidden");
+}
+
+function clearHeat(){ const c=$("heat"); c.getContext("2d").clearRect(0,0,c.width,c.height); }
+
+function drawDemoHeat(){
+  const img=$("preview"), c=$("heat");
+  c.width=img.clientWidth; c.height=img.clientHeight;
+  const x=c.getContext("2d"), cx=c.width*(.4+Math.random()*.2), cy=c.height*(.4+Math.random()*.2), r=Math.min(c.width,c.height)*.35;
+  const g=x.createRadialGradient(cx,cy,0,cx,cy,r);
+  g.addColorStop(0,"rgba(255,0,0,.9)"); g.addColorStop(.5,"rgba(255,200,0,.6)"); g.addColorStop(1,"rgba(0,0,255,0)");
+  x.fillStyle=g; x.fillRect(0,0,c.width,c.height);
+}
+
+function drawHeatImage(src){
+  const c=$("heat"), img=$("preview"), im=new Image();
+  im.onload=()=>{c.width=img.clientWidth;c.height=img.clientHeight;c.getContext("2d").drawImage(im,0,0,c.width,c.height)};
+  im.src=src;
+}
+
+function demoResult(){
+  let p = CLASSES.map(()=>Math.random()**3), s = p.reduce((a,b)=>a+b,0);
+  p = p.map(v=>v/s);
+  const probs={}; CLASSES.forEach((c,i)=>probs[c]=p[i]);
+  const label = CLASSES[p.indexOf(Math.max(...p))];
+  return {label, confidence:probs[label], probs, demo:true};
+}
+
+async function predict(){
+  if(!API_URL) { await new Promise(r=>setTimeout(r,700)); return demoResult(); }
+  const fd = new FormData(); fd.append("image", current);
+  const res = await fetch(API_URL, {method:"POST", body:fd});
+  if(!res.ok) throw new Error("Server error " + res.status);
+  return res.json();
+}
+
+$("go").onclick = async () => {
+  if(!current) return;
+  $("go").disabled = true; $("go").textContent = "Analyzing...";
+  try{
+    const r = await predict();
+    show(r);
+  }catch(e){ alert("Prediction failed: " + e.message); }
+  $("go").textContent = "Analyze image"; $("go").disabled = false;
+};
+
+function show(r){
+  $("empty").classList.add("hidden"); $("out").classList.remove("hidden");
+  $("lbl").textContent = r.label;
+  $("conf").textContent = "Confidence: " + (r.confidence*100).toFixed(1) + "%";
+  const sorted = Object.entries(r.probs).sort((a,b)=>b[1]-a[1]);
+  $("bars").innerHTML = sorted.map(([k,v])=>
+    `<div class="bar"><span><b>${k}</b><em>${(v*100).toFixed(1)}%</em></span><div class="track"><div class="fill" data-w="${v*100}"></div></div></div>`).join("");
+  requestAnimationFrame(()=>document.querySelectorAll(".fill").forEach(f=>f.style.width=f.dataset.w+"%"));
+  $("mode").textContent = r.demo
+    ? "DEMO MODE: these values are random and are NOT a real prediction. Connect your trained model through API_URL."
+    : "Prediction from the trained DenseNet121 + EfficientNetB0 model.";
+  if($("showHeat").checked){ r.heatmap ? drawHeatImage(r.heatmap) : (r.demo && drawDemoHeat()); }
+  window._last = r;
+}
+
+$("showHeat").onchange = () => {
+  if(!$("showHeat").checked) return clearHeat();
+  const r = window._last; if(!r) return;
+  r.heatmap ? drawHeatImage(r.heatmap) : (r.demo && drawDemoHeat());
+};
+
+$("reset").onclick = () => {
+  current=null; fileInput.value=""; $("stage").style.display="none"; $("go").disabled=true;
+  $("out").classList.add("hidden"); $("empty").classList.remove("hidden"); clearHeat(); window._last=null;
+};
+</script>
+</body>
+</html>
